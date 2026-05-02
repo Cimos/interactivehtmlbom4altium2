@@ -1570,6 +1570,7 @@ var
   SilkscreenB: String;
   FontData: String;
   i: Integer;
+  PolySeg1, PolySeg2: TPolySegment;
 Begin
   // Make sure the current Workspace opens or else quit this script
   CurrWorkSpace := GetWorkSpace;
@@ -1670,35 +1671,53 @@ Begin
   // PnPout.Add('],');
   // PnPout.Add('"Board":[');
 
+  // Edges = actual board outline (upstream issue #9). Previously iterated the
+  // Keepout layer, which missed projects that draw the outline elsewhere
+  // (Mechanical 1, Board Shape) and emitted keepout zones as if they were the
+  // board edge. Walks Board.BoardOutline.Segments[] with wrap-around to close
+  // the loop. Outline render width is a fixed 0.15 mm — render-only choice,
+  // consistent across projects regardless of Altium-side BorderWidth.
   Edges := '';
-
   Count := 0;
-
-  Iter := Board.BoardIterator_Create;
-  Iter.AddFilter_LayerSet(MkSet(eKeepOutLayer));
-  Iter.AddFilter_ObjectSet(MkSet(eArcObject, eTrackObject));
-  Iter.AddFilter_Method(eProcessAll);
-  Prim := Iter.FirstPCBObject;
-  while (Prim <> nil) do
+  if (Board.BoardOutline <> nil) then
   begin
-    Inc(Count);
-    If (Count > 1) Then
-      Edges := Edges + ', ';
+    for i := 0 to Board.BoardOutline.PointCount - 1 do
+    begin
+      PolySeg1 := Board.BoardOutline.Segments(i);
+      if i < Board.BoardOutline.PointCount - 1 then
+        PolySeg2 := Board.BoardOutline.Segments(i + 1)
+      else
+        PolySeg2 := Board.BoardOutline.Segments(0);
 
-    case (Prim.ObjectId) of
-      eArcObject:
-        begin
-          Edges := Edges + ParseArcGeneric(Board, Prim);
-        end;
-      eTrackObject:
-        begin
-          Edges := Edges + ParseTrackGeneric(Board, Prim, False);
-        end;
+      Inc(Count);
+      if Count > 1 then
+        Edges := Edges + ', ';
+
+      EdgeWidth := JSONFloatToStr(0.15);
+
+      if PolySeg1.Kind = ePolySegmentLine then
+      begin
+        EdgeX1 := JSONFloatToStr(CoordToMMs(PolySeg1.vx - Board.XOrigin));
+        EdgeY1 := JSONFloatToStr(-CoordToMMs(PolySeg1.vy - Board.YOrigin));
+        EdgeX2 := JSONFloatToStr(CoordToMMs(PolySeg2.vx - Board.XOrigin));
+        EdgeY2 := JSONFloatToStr(-CoordToMMs(PolySeg2.vy - Board.YOrigin));
+        Edges := Edges + '{"type":"segment","start":[' + EdgeX1 + ', ' + EdgeY1
+          + '],"end":[' + EdgeX2 + ', ' + EdgeY2 + '],"width":' + EdgeWidth + '}';
+      end
+      else
+      begin
+        // Arc segment. Y-flip negates and swaps angles (see :597-598).
+        EdgeX1 := JSONFloatToStr(CoordToMMs(PolySeg1.cx - Board.XOrigin));
+        EdgeY1 := JSONFloatToStr(-CoordToMMs(PolySeg1.cy - Board.YOrigin));
+        EdgeRadius := JSONFloatToStr(CoordToMMs(PolySeg1.Radius));
+        Edges := Edges + '{"type":"arc","width":' + EdgeWidth
+          + ',"start":[' + EdgeX1 + ', ' + EdgeY1
+          + '],"radius":' + EdgeRadius
+          + ',"startangle":' + JSONFloatToStr(-PolySeg1.Angle2)
+          + ',"endangle":' + JSONFloatToStr(-PolySeg1.Angle1) + '}';
+      end;
     end;
-
-    Prim := Iter.NextPCBObject;
   end;
-  Board.BoardIterator_Destroy(Iter);
   (*
     PnPout.Add('],');
     PnPout.Add('"BB":{');
