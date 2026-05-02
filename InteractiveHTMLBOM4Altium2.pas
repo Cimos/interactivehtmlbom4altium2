@@ -546,6 +546,86 @@ begin
   Result := paramsComponent;
 end;
 
+// Case-insensitive lookup: project-level parameters first, then built-ins
+// (ProjectName, VariantName). When a token is missing or its value is blank,
+// returns a hint pointing at Project Options so the user knows what to fix.
+function ResolveProjectToken(Token: String): String;
+var
+  i: Integer;
+  CurrParm: IParameter;
+begin
+  if CurrProject <> nil then
+    for i := 0 to CurrProject.DM_ParameterCount - 1 do
+    begin
+      CurrParm := CurrProject.DM_Parameters(i);
+      if (CurrParm <> nil) and (CompareText(CurrParm.DM_Name, Token) = 0) then
+      begin
+        Result := CurrParm.DM_Value;
+        if Result = '' then
+          Result := '[Set ' + Token + ' in Project Options]';
+        Exit;
+      end;
+    end;
+
+  if CompareText(Token, 'ProjectName') = 0 then
+  begin
+    if CurrProject <> nil then
+      Result := ChangeFileExt(CurrProject.DM_ProjectFileName, '')
+    else
+      Result := '';
+    Exit;
+  end;
+  if CompareText(Token, 'VariantName') = 0 then
+  begin
+    if ProjectVariant <> nil then
+      Result := ProjectVariant.DM_Description
+    else
+      Result := '';
+    Exit;
+  end;
+
+  // Unknown token: same hint as a blank-value parameter — both mean "user
+  // needs to set this in Project Options". Trade-off: a misspelling like
+  // ${Compny} resolves to "[Set Compny in Project Options]", which is still
+  // visible in the rendered output but reads as a missing parameter rather
+  // than as a typo. Acceptable because both fixes start the same way (open
+  // Project Options).
+  Result := '[Set ' + Token + ' in Project Options]';
+end;
+
+// Used by the Title / Company / Revision metadata fields (#12).
+function SubstituteProjectParams(s: String): String;
+var
+  openIdx, closeRel, closeIdx: Integer;
+  Token, Value, Tail: String;
+begin
+  Result := '';
+  while Length(s) > 0 do
+  begin
+    openIdx := Pos('${', s);
+    if openIdx = 0 then
+    begin
+      Result := Result + s;
+      Exit;
+    end;
+
+    Tail := Copy(s, openIdx + 2, Length(s));
+    closeRel := Pos('}', Tail);
+    if closeRel = 0 then
+    begin
+      Result := Result + s;
+      Exit;
+    end;
+    closeIdx := openIdx + 1 + closeRel;
+
+    Token := Copy(s, openIdx + 2, closeIdx - openIdx - 2);
+    Value := ResolveProjectToken(Token);
+
+    Result := Result + Copy(s, 1, openIdx - 1) + Value;
+    s := Copy(s, closeIdx + 1, Length(s));
+  end;
+end;
+
 { ..................................................................................................................... }
 { .                                            Geometry Helper Functions                                              . }
 { ..................................................................................................................... }
@@ -1946,9 +2026,11 @@ Begin
 
   Metadata := '';
 
-  Metadata := Metadata + '"title":' + JSONStrToStr(Title) + ',';
-  Metadata := Metadata + '"revision":' + JSONStrToStr(Revision) + ',';
-  Metadata := Metadata + '"company":' + JSONStrToStr(Company) + ',';
+  // Title/Revision/Company support ${TOKEN} substitution from project
+  // parameters and a small set of built-ins — see ResolveProjectToken (#12).
+  Metadata := Metadata + '"title":' + JSONStrToStr(SubstituteProjectParams(Title)) + ',';
+  Metadata := Metadata + '"revision":' + JSONStrToStr(SubstituteProjectParams(Revision)) + ',';
+  Metadata := Metadata + '"company":' + JSONStrToStr(SubstituteProjectParams(Company)) + ',';
   // BOM-generation timestamp. ISO-ish format with explicit FormatDateTime mask
   // (NOT DateTimeToStr) so output is locale-independent — system regional settings
   // would otherwise flip month/day order and decimal separators. Local time, no TZ.
@@ -2641,9 +2723,14 @@ Begin
   AddTracks := False;
   Highlighting1Pin := False;
   FabLayer := False;
-  Title := 'Title';
-  Company := 'Company';
-  Revision := 'Revision: 1';
+  // Defaults use the ${TOKEN} substitution machinery (#12) so a fresh script
+  // run picks up the actual project metadata. Title resolves via the built-in
+  // ProjectName; Company / Revision resolve from project parameters of the
+  // same name (Project Options -> Parameters). Unconfigured tokens render
+  // literally so the user sees what to set.
+  Title := '${ProjectName}';
+  Company := '${Company}';
+  Revision := '${Revision}';
   ValueParameterName := 'Value';
   ColumnsParametersNames := TStringList.Create;
   ColumnsParametersNames.Delimiter := ',';
