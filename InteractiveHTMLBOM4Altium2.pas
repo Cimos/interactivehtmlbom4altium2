@@ -1930,7 +1930,12 @@ Begin
   Metadata := Metadata + '"title":' + JSONStrToStr(Title) + ',';
   Metadata := Metadata + '"revision":' + JSONStrToStr(Revision) + ',';
   Metadata := Metadata + '"company":' + JSONStrToStr(Company) + ',';
-  Metadata := Metadata + '"date":' + JSONStrToStr('todo');
+  // BOM-generation timestamp. ISO-ish format with explicit FormatDateTime mask
+  // (NOT DateTimeToStr) so output is locale-independent — system regional settings
+  // would otherwise flip month/day order and decimal separators. Local time, no TZ.
+  // If a future need arises to expose format or timezone as a user option, treat as
+  // a sibling of upstream #12 (Title/Revision parameter substitution).
+  Metadata := Metadata + '"date":' + JSONStrToStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
 
   (* PnPout.Add('},');
     PnPout.Add('"Settings":{');
