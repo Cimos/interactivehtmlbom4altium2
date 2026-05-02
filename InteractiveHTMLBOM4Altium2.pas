@@ -1357,58 +1357,84 @@ function ParsePolyGeneric(Board: IPCB_Board; Prim: TObject;
   NoType: Boolean): String;
 var
   PnPout: TStringList;
-  Layer, Net: String;
-  // X1, Y1, X2, Y2, _W, _H: Single;
-  // EdgeWidth, EdgeX1, EdgeY1, PadDrillWidth: String;
+  Net: String;
   EdgeX1, EdgeY1: String;
   EdgeType: String;
-  k: Integer;
+  zoneCount: Integer;
   CI1, CO1: TObject;
   contour: IPCB_Contour;
   kk: Integer;
+  holeIdx: Integer;
 begin
   PnPout := TStringList.Create;
 
-  If (Prim.Layer = eTopOverlay) Then
-    Layer := 'TopOverlay'
-  Else If (Prim.Layer = eBottomOverlay) Then
-    Layer := 'BottomOverlay'
-  Else If (Prim.Layer = eTopLayer) Then
-    Layer := 'TopLayer'
-  Else If (Prim.Layer = eBottomLayer) Then
-    Layer := 'BottomLayer';
   Net := 'No Net';
   if Prim.Net <> nil then
     Net := Prim.Net.name;
   Nets.Add(Net);
 
   EdgeType := 'polygon';
-  PnPout.Add('{');
-  if not NoType then
+
+  // Skip signal-layer polygons that have no net. These are typically split
+  // planes / negative planes / coverlay outlines — not conductor pours.
+  // Their child regions represent clearance/keepout shapes, not copper, so
+  // emitting them as filled zones produced phantom track patterns spanning
+  // the board (the case behind the bottom-layer issue under #13).
+  // Returns an empty zone wrapper so the caller's separator logic stays
+  // valid without a special case.
+  if NoType and (Prim.Net = nil) then
   begin
-    PnPout.Add('"type":' + JSONStrToStr(EdgeType) + ',');
-    PnPout.Add('"pos":' + '[0,0]' + ',');
-    PnPout.Add('"angle":' + '0' + ',');
-  end;
-  if NoType then
+    PnPout.Add('{');
     PnPout.Add('"net":' + JSONStrToStr(Net) + ',');
-  // PnPout.Add('"Layer":' + JSONStrToStr(Layer) + ',');
-  // PnPout.Add('"Type":' + JSONStrToStr(EdgeType) + ',');
-  // PnPout.Add('"Net":' + JSONStrToStr(Net) + ',');
-  PnPout.Add('"polygons": [');
+    PnPout.Add('"polygons":[]');
+    PnPout.Add('}');
+    Result := PnPout.Text;
+    PnPout.Free;
+    Exit;
+  end;
 
-  k := 0;
-
+  // Emit ONE zone object per child region of the polygon, instead of bundling
+  // all child regions into a single zone with one big polygons[] array.
+  //
+  // Why: drawZones (render.js:479) calls ctx.fill(path, fillrule) once per
+  // zone. fillrule:evenodd applied to many child regions in the same zone
+  // XORs across them — when child regions overlap (which happens on a dense
+  // pour like a board-spanning bottom-side GND), the XOR produces phantom
+  // voids that look like phantom tracks and half-drawn thermals. Splitting
+  // each child region into its own zone keeps fillrule:evenodd local to
+  // outer-vs-its-own-holes only — no cross-region interaction.
+  //
+  // This is the second part of the #13 fix; the first part (emitting holes
+  // alongside MainContour, instead of MainContour alone, so via cutouts in
+  // pours render correctly) is preserved per-zone.
+  zoneCount := 0;
   CI1 := Prim.GroupIterator_Create;
-  // CI1.AddFilter_ObjectSet(MkSet(ePadObject));
   CO1 := CI1.FirstPCBObject;
   While (CO1 <> Nil) Do
   begin
-    if CO1.ObjectId = eRegionObject then
+    // Only Copper-kind regions represent the actual conductor pour. The
+    // group iterator can also return BoardCutout, free-Cutout, NamedRegion
+    // and Cavity child regions; emitting any of those as zone fills puts
+    // phantom shapes inside board cutouts and other non-conductor areas.
+    // Mirrors the top-level filter at :1906 for free-standing regions.
+    if (CO1.ObjectId = eRegionObject) and (CO1.Kind() = eRegionKind_Copper) then
     begin
-      Inc(k);
-      If (k > 1) Then
+      Inc(zoneCount);
+      if zoneCount > 1 then
         PnPout.Add(',');
+
+      PnPout.Add('{');
+      if not NoType then
+      begin
+        PnPout.Add('"type":' + JSONStrToStr(EdgeType) + ',');
+        PnPout.Add('"pos":' + '[0,0]' + ',');
+        PnPout.Add('"angle":' + '0' + ',');
+      end;
+      if NoType then
+        PnPout.Add('"net":' + JSONStrToStr(Net) + ',');
+      PnPout.Add('"polygons": [');
+
+      // Outer contour
       PnPout.Add('[');
       contour := CO1.GetMainContour();
       for kk := 0 to contour.Count do
@@ -1427,14 +1453,57 @@ begin
         PnPout.Add(']');
       end;
       PnPout.Add(']');
+
+      // Holes — each subtracts via fillrule:evenodd within this zone.
+      for holeIdx := 0 to CO1.HoleCount - 1 do
+      begin
+        PnPout.Add(',');
+        PnPout.Add('[');
+        contour := CO1.Holes(holeIdx);
+        for kk := 0 to contour.Count do
+        begin
+          If (kk > 0) Then
+            PnPout.Add(',');
+          EdgeX1 := JSONFloatToStr
+            (CoordToMMs(contour.GetState_PointX(kk mod contour.Count) -
+            Board.XOrigin));
+          EdgeY1 := JSONFloatToStr
+            (-CoordToMMs(contour.GetState_PointY(kk mod contour.Count) -
+            Board.YOrigin));
+          PnPout.Add('[');
+          PnPout.Add(EdgeX1 + ',');
+          PnPout.Add(EdgeY1);
+          PnPout.Add(']');
+        end;
+        PnPout.Add(']');
+      end;
+
+      PnPout.Add('],');
+      PnPout.Add('"fillrule":"evenodd"');
+      PnPout.Add('}');
     end;
     CO1 := CI1.NextPCBObject;
   end;
   Prim.GroupIterator_Destroy(CI1);
 
-  PnPout.Add(']');
-
-  PnPout.Add('}');
+  // Hatched polygons have track/arc children, not eRegionObject children, so
+  // zoneCount stays 0. Emit one empty wrapper so callers that splice the
+  // result into ZonesF/ZonesB/SilkscreenF/SilkscreenB with their own
+  // separator logic don't end up with stray commas.
+  if zoneCount = 0 then
+  begin
+    PnPout.Add('{');
+    if not NoType then
+    begin
+      PnPout.Add('"type":' + JSONStrToStr(EdgeType) + ',');
+      PnPout.Add('"pos":' + '[0,0]' + ',');
+      PnPout.Add('"angle":' + '0' + ',');
+    end;
+    if NoType then
+      PnPout.Add('"net":' + JSONStrToStr(Net) + ',');
+    PnPout.Add('"polygons": []');
+    PnPout.Add('}');
+  end;
 
   Result := PnPout.Text;
   PnPout.Free;
