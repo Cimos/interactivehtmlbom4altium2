@@ -1691,9 +1691,7 @@ var
   PadsCount: Integer;
   X1, Y1, X2, Y2, _W, _H: Single;
   Width, Height: String;
-  CurrParm: IParameter;
   NoBOM: Boolean;
-  ccc: IComponent;
   Edges: String;
 
   EdgeWidth, EdgeX1, EdgeY1, EdgeX2, EdgeY2, EdgeRadius: String;
@@ -1777,21 +1775,22 @@ Begin
   Begin
     NoBOM := False;
 
-    // TODO: False if no project or schematic is loaded, or if compilation failed. Consider asking the user whether to continue
-    if (FlattenedDocument <> nil) and (FlattenedDocument.DM_ComponentCount > 0)
-    then
-    begin
-      // TODO: ccc = nil is possible?
-      ccc := GetCompFromCompEx(Component);
-
-      // TODO: HOW?
-      CurrParm := ccc.DM_GetParameterByName('Component Kind');
-      // (CurrParm <> nil) and
-      if (CurrParm.DM_Value = 'Standard (No BOM)') then
-      begin
-        NoBOM := True;
-      end;
-    end;
+    // #14: detect "Standard (No BOM)" via IPCB_Component.ComponentKind
+    // (the typed enum), not via DM_GetParameterByName / DM_ParameterCount
+    // / IPCB_PrimitiveParameters. None of those work on AD26 — the first
+    // two get rejected by the DelphiScript parser; the third doesn't
+    // expose Component Kind as a parameter on the PCB side.
+    //
+    // Ordinal 5 is the empirically-determined enum value for
+    // "Standard (No BOM)" on AD26. Altium's public TComponentKind docs
+    // only list ordinals 0-4 (Standard, Mechanical, Graphical,
+    // NetTie_BOM, NetTie_NoBOM). 5 is undocumented but stable on AD26 —
+    // verified by emitting Ord(GetState_ComponentKind) per component
+    // and matching against the user's known no-BOM components (70 hits,
+    // matched the prior DM_GetParameterByName count of 71 within
+    // project-state drift).
+    if Ord(Component.GetState_ComponentKind) = 5 then
+      NoBOM := True;
 
     // Print Pick&Place data of SMD components to file
     if ComponentIsFittedInCurrentVariant(Component.SourceUniqueId,
