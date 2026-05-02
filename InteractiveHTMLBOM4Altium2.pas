@@ -1720,6 +1720,7 @@ var
   FontData: String;
   i: Integer;
   PolySeg1, PolySeg2: TPolySegment;
+  cutoutContour: IPCB_Contour;
 Begin
   // Make sure the current Workspace opens or else quit this script
   CurrWorkSpace := GetWorkSpace;
@@ -1867,6 +1868,40 @@ Begin
       end;
     end;
   end;
+
+  // Internal board cutouts (notches, slots, windows). Board.BoardOutline
+  // covers the perimeter only — interior cutouts live as eRegionObject
+  // primitives with Kind = eRegionKind_BoardCutout. Walk each cutout's
+  // MainContour and emit segment edges so the cutout has a visible outline
+  // in the IBOM render. (Issue I.)
+  Iter := Board.BoardIterator_Create;
+  Iter.AddFilter_ObjectSet(MkSet(eRegionObject));
+  Iter.AddFilter_IPCB_LayerSet(LayerSet.AllLayers);
+  Iter.AddFilter_Method(eProcessAll);
+  Prim := Iter.FirstPCBObject;
+  while (Prim <> nil) do
+  begin
+    if Prim.Kind() = eRegionKind_BoardCutout then
+    begin
+      cutoutContour := Prim.GetMainContour();
+      EdgeWidth := JSONFloatToStr(0.15);
+      for hhhhi := 0 to cutoutContour.Count - 1 do
+      begin
+        Inc(Count);
+        if Count > 1 then
+          Edges := Edges + ', ';
+        EdgeX1 := JSONFloatToStr(CoordToMMs(cutoutContour.GetState_PointX(hhhhi) - Board.XOrigin));
+        EdgeY1 := JSONFloatToStr(-CoordToMMs(cutoutContour.GetState_PointY(hhhhi) - Board.YOrigin));
+        EdgeX2 := JSONFloatToStr(CoordToMMs(cutoutContour.GetState_PointX((hhhhi + 1) mod cutoutContour.Count) - Board.XOrigin));
+        EdgeY2 := JSONFloatToStr(-CoordToMMs(cutoutContour.GetState_PointY((hhhhi + 1) mod cutoutContour.Count) - Board.YOrigin));
+        Edges := Edges + '{"type":"segment","start":[' + EdgeX1 + ', ' + EdgeY1
+          + '],"end":[' + EdgeX2 + ', ' + EdgeY2 + '],"width":' + EdgeWidth + '}';
+      end;
+    end;
+    Prim := Iter.NextPCBObject;
+  end;
+  Board.BoardIterator_Destroy(Iter);
+
   (*
     PnPout.Add('],');
     PnPout.Add('"BB":{');
