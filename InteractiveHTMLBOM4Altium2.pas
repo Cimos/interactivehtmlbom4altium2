@@ -967,19 +967,17 @@ begin
             PadShape := 'circle'
           else
             PadShape := 'oval';
-          // (res['size'][0] == res['size'][1]) ? 'circle' : 'oval';
         end;
       2:
         PadShape := 'rect';
-      // 3:PadShape :='chamfrect';
+      3:
+        PadShape := 'chamfrect';
       9:
         begin
           PadShape := 'roundrect';
           PadRadius := JSONFloatToStr
             (CoordToMMs(Prim.CornerRadius(Prim.Layer)));
         end;
-      // default:
-      // res['shape'] :='custom';
     end;
   end
   else if (Pad.Layer = eBottomLayer) then
@@ -996,19 +994,17 @@ begin
             PadShape := 'circle'
           else
             PadShape := 'oval';
-          // (res['size'][0] == res['size'][1]) ? 'circle' : 'oval';
         end;
       2:
         PadShape := 'rect';
-      // 3:PadShape :='chamfrect';
+      3:
+        PadShape := 'chamfrect';
       9:
         begin
           PadShape := 'roundrect';
           PadRadius := JSONFloatToStr
             (CoordToMMs(Prim.CornerRadius(Prim.Layer)));
         end;
-      // default:
-      // res['shape'] :='custom';
     end;
   end
   else
@@ -1026,17 +1022,15 @@ begin
             PadShape := 'circle'
           else
             PadShape := 'oval';
-          // (res['size'][0] == res['size'][1]) ? 'circle' : 'oval';
         end;
-      // 3:PadShape :='chamfrect';
+      3:
+        PadShape := 'chamfrect';
       9:
         begin
           PadShape := 'roundrect';
           PadRadius := JSONFloatToStr
             (CoordToMMs(Prim.CornerRadius(Prim.Layer)));
         end;
-      // default:
-      // res['shape'] :='custom';
     end;
     case (Pad.BotShape) of
       1:
@@ -1045,19 +1039,17 @@ begin
             PadShape := 'circle'
           else
             PadShape := 'oval';
-          // (res['size'][0] == res['size'][1]) ? 'circle' : 'oval';
         end;
       2:
         PadShape := 'rect';
-      // 3:PadShape :='chamfrect';
+      3:
+        PadShape := 'chamfrect';
       9:
         begin
           PadShape := 'roundrect';
           PadRadius := JSONFloatToStr
             (CoordToMMs(Prim.CornerRadius(Prim.Layer)));
         end;
-      // default:
-      // res['shape'] :='custom';
     end;
 
     case (Pad.HoleType) of
@@ -1118,11 +1110,14 @@ begin
   begin
     PnPout.Add('"radius":' + PadRadius + ',');
   end;
-  // polygons
-  // radius
-  // chamfpos
-  // chamfratio
-  // type HERE
+  if PadShape = 'chamfrect' then
+  begin
+    // All four corners chamfered with the regular-octagon ratio
+    // 1/(2+sqrt(2)) ≈ 0.2929. chamfpos bitmask 15 = all corners
+    // (web/render.js getChamferedRectPath bit map: 1=TL, 2=TR, 4=BL, 8=BR).
+    PnPout.Add('"chamfpos":15,');
+    PnPout.Add('"chamfratio":0.2929,');
+  end;
 
   if PadPin1 then
   begin
