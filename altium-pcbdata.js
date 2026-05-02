@@ -44,9 +44,6 @@ function fromaltium(_data_, _config_, _altiumconfig_) {
     // nets.push("No Net");
     // _nets["No Net"] = "No Net";
 
-    //TODO: NoBOM<>Skipped looks like it DNP
-    //bom.skipped.push(index);
-
     var group_fields = _altiumconfig_.group_fields;
     var show_fields = _config_.fields;
 
@@ -87,6 +84,10 @@ function fromaltium(_data_, _config_, _altiumconfig_) {
         _both[groupKey].push([item.ref, index]);
 
         bom.fields[index] = getfield(item, show_fields);
+
+        if (item.NoBOM) {
+            bom.skipped.push(index);
+        }
 
         index++;
     }
