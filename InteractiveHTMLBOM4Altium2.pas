@@ -1156,6 +1156,10 @@ var
   X1, Y1, X2, Y2, _W, _H: Single;
   Width, Height: String;
 
+  DrawIter, DrawPrim: TObject;
+  DrawingsCount: Integer;
+  DrawLayer: String;
+
   sl: TStringList;
   hhhhi: Integer;
   hhhh: String;
@@ -1250,7 +1254,52 @@ begin
 
   PnPout.Add('],');
 
-  PnPout.Add('"drawings": [],');
+  // Per-component overlay primitives. Empty until now: highlights only repainted
+  // pads + the bbox stroke, which over green PCB is barely visible (issue J).
+  // web/render.js drawFootprint recolors each entry whose .layer matches the
+  // canvas side. NOTE: PickAndPlaceOutputGeneric still walks overlays with
+  // eProcessAll, so component-owned silk also lands in pcbdata.drawings.silkscreen
+  // and draws twice on the base layer. Tolerable visual artifact; deduping would
+  // need a parent-pointer to skip component-owned prims in the wider walk —
+  // unverified whether IPCB_Track/IPCB_Arc expose one. Deferred.
+  PnPout.Add('"drawings": [');
+  DrawingsCount := 0;
+  DrawIter := Component.GroupIterator_Create;
+  DrawIter.AddFilter_ObjectSet(MkSet(eArcObject, eTrackObject));
+  // AllLayers matches the working pad-iterator pattern at the top of this
+  // function. The MkSet(eTopOverlay, eBottomOverlay) form has only been
+  // exercised on BoardIterator elsewhere, never GroupIterator. Filter
+  // overlays via the inner DrawLayer check below instead.
+  DrawIter.AddFilter_LayerSet(AllLayers);
+  DrawPrim := DrawIter.FirstPCBObject;
+  while (DrawPrim <> nil) do
+  begin
+    DrawLayer := '';
+    if (DrawPrim.Layer = eTopOverlay) then
+      DrawLayer := 'F'
+    else if (DrawPrim.Layer = eBottomOverlay) then
+      DrawLayer := 'B';
+    if DrawLayer <> '' then
+    begin
+      Inc(DrawingsCount);
+      if DrawingsCount > 1 then
+        PnPout.Add(',');
+      PnPout.Add('{');
+      PnPout.Add('"layer":' + JSONStrToStr(DrawLayer) + ',');
+      PnPout.Add('"drawing":');
+      case DrawPrim.ObjectId of
+        eTrackObject:
+          PnPout.Add(ParseTrackGeneric(Board, DrawPrim, False));
+        eArcObject:
+          PnPout.Add(ParseArcGeneric(Board, DrawPrim));
+      end;
+      PnPout.Add('}');
+    end;
+    DrawPrim := DrawIter.NextPCBObject;
+  end;
+  Component.GroupIterator_Destroy(DrawIter);
+  PnPout.Add('],');
+
   PnPout.Add('"layer":' + JSONStrToStr(Layer));
   PnPout.Add('}');
   Result := PnPout.Text;
