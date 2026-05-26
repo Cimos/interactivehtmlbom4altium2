@@ -2882,11 +2882,11 @@ Begin
   LayerFilterIndex := 0;
   FormatIndex := 0;
   FieldSeparatorIndex := 0;
-  DarkMode := False;
-  AddNets := False;
-  AddTracks := False;
-  Highlighting1Pin := False;
-  FabLayer := False;
+  DarkMode := True;
+  AddNets := True;
+  AddTracks := True;
+  Highlighting1Pin := True;
+  FabLayer := True;
   // Defaults use the ${TOKEN} substitution machinery (#12) so a fresh script
   // run picks up the actual project metadata. Title resolves via the built-in
   // ProjectName; Company / Revision resolve from project parameters of the
@@ -2899,14 +2899,17 @@ Begin
   ColumnsParametersNames := TStringList.Create;
   ColumnsParametersNames.Delimiter := ',';
   ColumnsParametersNames.StrictDelimiter := True;
-  ColumnsParametersNames.Add('Value');
   ColumnsParametersNames.Add('[Footprint]');
+  ColumnsParametersNames.Add('Manufacturer');
+  ColumnsParametersNames.Add('Manufacturer Part Number');
+  ColumnsParametersNames.Add('Supplier 1');
+  ColumnsParametersNames.Add('Supplier Part Number 1');
 
   GroupParametersNames := TStringList.Create;
   GroupParametersNames.Delimiter := ',';
   GroupParametersNames.StrictDelimiter := True;
-  GroupParametersNames.Add('Value');
   GroupParametersNames.Add('[Footprint]');
+  GroupParametersNames.Add('Manufacturer Part Number');
 
   // Overwrite defaults (if values are provided in Parameter list)
   {
