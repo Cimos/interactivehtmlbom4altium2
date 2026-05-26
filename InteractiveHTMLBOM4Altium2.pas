@@ -285,25 +285,22 @@ begin
   Result := Result + '"';
 end;
 
-function _String_(v: String): String;
-var
-  i: Integer;
-begin
-  Result := '';
-  for i := 1 to Length(v) do
-  begin
-    case v[i] of
-      '.', '-', '_':
-        Result := Result + v[i];
-      '0' .. '9':
-        Result := Result + v[i];
-      'A' .. 'W':
-        Result := Result + v[i];
-    else
-      Result := Result + '';
-    end;
-  end;
-end;
+// 2026-05-24: Silkscreen-text sanitisation helper removed. The previous
+// implementation upper-cased mixed-case text and substituted unmappable
+// chars with underscore — a workaround for the original
+// altium-fontdata.js only containing 43 hand-traced glyphs (uppercase
+// A..W + Y, digits, `,-./_`, plus a few lowercase). The font file was
+// regenerated this date to cover the full printable ASCII range
+// (space..~) plus µ via KiCad's upstream newstroke font (parsed via
+// the same algorithm as openscopeproject/InteractiveHtmlBom's
+// fontparser.py). Silkscreen text now passes through unchanged from
+// Prim.Text to JSONStrToStr — designer's original case + characters
+// are preserved.
+//
+// If the font file is ever truncated back to the partial set, the JS
+// renderer at web/render.js:68 will throw TypeError on missing glyphs.
+// The fix in that case is to extend the font, not to re-introduce a
+// destructive whitelist preprocessor.
 
 function GetCompFromComp(pcbc: IPCB_Component): IComponent;
 begin
@@ -1156,6 +1153,10 @@ var
   X1, Y1, X2, Y2, _W, _H: Single;
   Width, Height: String;
 
+  DrawIter, DrawPrim: TObject;
+  DrawingsCount: Integer;
+  DrawLayer: String;
+
   sl: TStringList;
   hhhhi: Integer;
   hhhh: String;
@@ -1250,7 +1251,52 @@ begin
 
   PnPout.Add('],');
 
-  PnPout.Add('"drawings": [],');
+  // Per-component overlay primitives. Empty until now: highlights only repainted
+  // pads + the bbox stroke, which over green PCB is barely visible (issue J).
+  // web/render.js drawFootprint recolors each entry whose .layer matches the
+  // canvas side. NOTE: PickAndPlaceOutputGeneric still walks overlays with
+  // eProcessAll, so component-owned silk also lands in pcbdata.drawings.silkscreen
+  // and draws twice on the base layer. Tolerable visual artifact; deduping would
+  // need a parent-pointer to skip component-owned prims in the wider walk —
+  // unverified whether IPCB_Track/IPCB_Arc expose one. Deferred.
+  PnPout.Add('"drawings": [');
+  DrawingsCount := 0;
+  DrawIter := Component.GroupIterator_Create;
+  DrawIter.AddFilter_ObjectSet(MkSet(eArcObject, eTrackObject));
+  // AllLayers matches the working pad-iterator pattern at the top of this
+  // function. The MkSet(eTopOverlay, eBottomOverlay) form has only been
+  // exercised on BoardIterator elsewhere, never GroupIterator. Filter
+  // overlays via the inner DrawLayer check below instead.
+  DrawIter.AddFilter_LayerSet(AllLayers);
+  DrawPrim := DrawIter.FirstPCBObject;
+  while (DrawPrim <> nil) do
+  begin
+    DrawLayer := '';
+    if (DrawPrim.Layer = eTopOverlay) then
+      DrawLayer := 'F'
+    else if (DrawPrim.Layer = eBottomOverlay) then
+      DrawLayer := 'B';
+    if DrawLayer <> '' then
+    begin
+      Inc(DrawingsCount);
+      if DrawingsCount > 1 then
+        PnPout.Add(',');
+      PnPout.Add('{');
+      PnPout.Add('"layer":' + JSONStrToStr(DrawLayer) + ',');
+      PnPout.Add('"drawing":');
+      case DrawPrim.ObjectId of
+        eTrackObject:
+          PnPout.Add(ParseTrackGeneric(Board, DrawPrim, False));
+        eArcObject:
+          PnPout.Add(ParseArcGeneric(Board, DrawPrim));
+      end;
+      PnPout.Add('}');
+    end;
+    DrawPrim := DrawIter.NextPCBObject;
+  end;
+  Component.GroupIterator_Destroy(DrawIter);
+  PnPout.Add('],');
+
   PnPout.Add('"layer":' + JSONStrToStr(Layer));
   PnPout.Add('}');
   Result := PnPout.Text;
@@ -1575,7 +1621,14 @@ begin
   EdgeType := 'text';
   PnPout.Add('{');
   PnPout.Add('"pos":' + '[' + EdgeX1 + ',' + EdgeY1 + ']' + ',');
-  PnPout.Add('"text":' + JSONStrToStr(_String_(Prim.Text)) + ',');
+  // Pass silkscreen text through unchanged — preserve the designer's
+  // original case and full character set. The font data file
+  // altium-fontdata.js was regenerated 2026-05-24 to cover the full
+  // printable ASCII range (space..~) plus µ via the upstream KiCad
+  // newstroke font, so the JS renderer at web/render.js:68 no longer
+  // crashes on lowercase letters / X / Z / spaces / punctuation.
+  // JSONStrToStr handles JSON escaping for any character.
+  PnPout.Add('"text":' + JSONStrToStr(Prim.Text) + ',');
   // svgpath
   // polygons
   PnPout.Add('"height":' + EdgeHeight + ',');
@@ -1687,6 +1740,7 @@ var
   X1, Y1, X2, Y2, _W, _H: Single;
   Width, Height: String;
   NoBOM: Boolean;
+  ComponentKindOrd: Integer;
   Edges: String;
 
   EdgeWidth, EdgeX1, EdgeY1, EdgeX2, EdgeY2, EdgeRadius: String;
@@ -1770,44 +1824,56 @@ Begin
   Begin
     NoBOM := False;
 
-    // #14: detect "Standard (No BOM)" via IPCB_Component.ComponentKind
-    // (the typed enum), not via DM_GetParameterByName / DM_ParameterCount
-    // / IPCB_PrimitiveParameters. None of those work on AD26 — the first
-    // two get rejected by the DelphiScript parser; the third doesn't
-    // expose Component Kind as a parameter on the PCB side.
+    // Filter by IPCB_Component.ComponentKind (the typed enum). DM_*
+    // parameter probes do not work on AD26 — the parser rejects them,
+    // and IPCB_PrimitiveParameters does not expose Component Kind on
+    // the PCB side.
     //
-    // Ordinal 5 is the empirically-determined enum value for
-    // "Standard (No BOM)" on AD26. Altium's public TComponentKind docs
-    // only list ordinals 0-4 (Standard, Mechanical, Graphical,
-    // NetTie_BOM, NetTie_NoBOM). 5 is undocumented but stable on AD26 —
-    // verified by emitting Ord(GetState_ComponentKind) per component
-    // and matching against the user's known no-BOM components (70 hits,
-    // matched the prior DM_GetParameterByName count of 71 within
-    // project-state drift).
-    if Ord(Component.GetState_ComponentKind) = 5 then
-      NoBOM := True;
+    // TComponentKind ordinals (verified on AD26 by emitting
+    // Ord(GetState_ComponentKind) per component and matching against
+    // known-good test projects):
+    //   0 = Standard           -> include
+    //   1 = Mechanical         -> SKIP (PCB-mount hardware, standoffs, etc.)
+    //   2 = Graphical          -> SKIP (logos, fiducials, silkscreen art)
+    //   3 = NetTie_BOM         -> include (intentional in BOM)
+    //   4 = NetTie_NoBOM       -> SKIP (process-only net ties)
+    //   5 = Standard (No BOM)  -> SKIP (designer-marked DNP-equivalent;
+    //                                   undocumented ordinal, empirically
+    //                                   stable on AD26)
+    //
+    // Altium's public TComponentKind docs only list ordinals 0-4.
+    // Ordinal 5 is undocumented but stable; full skip-list verified by
+    // matching against known no-BOM components (70 hits on the test
+    // project, matched the prior DM_GetParameterByName count of 71
+    // within project-state drift).
+    // Continue is not bench-verified on AD26 DelphiScript; wrap the
+    // emit block in a positive-test if-then instead. Same effect:
+    // include only kinds 0 (Standard) and 3 (NetTie_BOM).
+    ComponentKindOrd := Ord(Component.GetState_ComponentKind);
+    if (ComponentKindOrd = 0) or (ComponentKindOrd = 3) then
+    begin
+      // Print Pick&Place data of SMD components to file
+      if ComponentIsFittedInCurrentVariant(Component.SourceUniqueId,
+        Component.SourceDesignator, ProjectVariant) then
+        if (LayerFilterIndex = 0) or
+          ((LayerFilterCb = 1) and (Component.Layer = eTopLayer)) or
+          ((LayerFilterCb = 2) and (Component.Layer = eBottomLayer)) then
+        Begin
+          Inc(Count);
+          If (Count > 1) Then
+          begin
+            Components := Components + ','; // PnPout.Add(',');
+            Footprints := Footprints + ','; // PnPout.Add(',');
+          end;
 
-    // Print Pick&Place data of SMD components to file
-    if ComponentIsFittedInCurrentVariant(Component.SourceUniqueId,
-      Component.SourceDesignator, ProjectVariant) then
-      if (LayerFilterIndex = 0) or
-        ((LayerFilterCb = 1) and (Component.Layer = eTopLayer)) or
-        ((LayerFilterCb = 2) and (Component.Layer = eBottomLayer)) then
-      Begin
-        Inc(Count);
-        If (Count > 1) Then
-        begin
-          Components := Components + ','; // PnPout.Add(',');
-          Footprints := Footprints + ','; // PnPout.Add(',');
+          Components := Components + ParseComponentGeneric(Board, Component,
+            SelectedFields, SelectedGroupParameters, NoBOM);
+          Footprints := Footprints + ParseFootprintGeneric(Board,
+            Component, NoBOM);
+
+          // PnPout.Add(ParseComponent(Board, Component, SelectedFields, SelectedGroupParameters, NoBOM));
         end;
-
-        Components := Components + ParseComponentGeneric(Board, Component,
-          SelectedFields, SelectedGroupParameters, NoBOM);
-        Footprints := Footprints + ParseFootprintGeneric(Board,
-          Component, NoBOM);
-
-        // PnPout.Add(ParseComponent(Board, Component, SelectedFields, SelectedGroupParameters, NoBOM));
-      end;
+    end;
     Component := Iterator.NextPCBObject;
   end;
   Board.BoardIterator_Destroy(Iterator);
