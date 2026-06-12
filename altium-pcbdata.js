@@ -64,30 +64,34 @@ function fromaltium(_data_, _config_, _altiumconfig_) {
         var item = _data_.components[key];
         var groupKey = JSON.stringify(getgroup(item, group_fields));
 
-        if (item.layer == "F") {
-            if (!(groupKey in _F)) {
-                _F[groupKey] = [];
-            }
-            _F[groupKey].push([item.ref, index]);
-        }
-
-        if (item.layer == "B") {
-            if (!(groupKey in _B)) {
-                _B[groupKey] = [];
-            }
-            _B[groupKey].push([item.ref, index]);
-        }
-
-        if (!(groupKey in _both)) {
-            _both[groupKey] = [];
-        }
-        _both[groupKey].push([item.ref, index]);
-
-        bom.fields[index] = getfield(item, show_fields);
-
+        // NoBOM (DNP / DNF) parts go to bom.skipped only — never into the
+        // bom.both/F/B table groups, matching the upstream generator.
+        // skipped footprints still render (DNP outline) but are excluded
+        // from the BOM table and the board stats.
         if (item.NoBOM) {
             bom.skipped.push(index);
+        } else {
+            if (item.layer == "F") {
+                if (!(groupKey in _F)) {
+                    _F[groupKey] = [];
+                }
+                _F[groupKey].push([item.ref, index]);
+            }
+
+            if (item.layer == "B") {
+                if (!(groupKey in _B)) {
+                    _B[groupKey] = [];
+                }
+                _B[groupKey].push([item.ref, index]);
+            }
+
+            if (!(groupKey in _both)) {
+                _both[groupKey] = [];
+            }
+            _both[groupKey].push([item.ref, index]);
         }
+
+        bom.fields[index] = getfield(item, show_fields);
 
         index++;
     }

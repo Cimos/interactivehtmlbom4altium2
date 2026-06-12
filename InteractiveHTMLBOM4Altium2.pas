@@ -509,6 +509,30 @@ begin
   end;
 end;
 
+{
+  ComponentIsDNFInCurrentVariant returns True only when the current project
+  variant explicitly marks the designator Not Fitted. Distinct from
+  ComponentIsFittedInCurrentVariant returning False, which also covers
+  instances belonging to a different variant - those must stay excluded
+  from the output entirely, while Not Fitted parts are emitted flagged
+  NoBOM so they render as DNP instead of disappearing from the board view.
+}
+Function ComponentIsDNFInCurrentVariant(Designator: TString;
+  _ProjectVariant: IProjectVariant): Boolean;
+var
+  ComponentVariation: IComponentVariation;
+begin
+  Result := False;
+  if _ProjectVariant = nil then
+    Exit;
+  ComponentVariation := _ProjectVariant.DM_FindComponentVariationByDesignator
+    (Designator);
+  if ComponentVariation = nil then
+    Exit;
+  if ComponentVariation.DM_VariationKind = eVariation_NotFitted then
+    Result := True;
+end;
+
 function GetComponentParameters(comp: IPCB_Component): TStringList;
 var
   stateText: string;
@@ -1741,6 +1765,7 @@ var
   Width, Height: String;
   NoBOM: Boolean;
   ComponentKindOrd: Integer;
+  EmitComponent: Boolean;
   Edges: String;
 
   EdgeWidth, EdgeX1, EdgeY1, EdgeX2, EdgeY2, EdgeRadius: String;
@@ -1836,25 +1861,43 @@ Begin
     //   1 = Mechanical         -> SKIP (PCB-mount hardware, standoffs, etc.)
     //   2 = Graphical          -> SKIP (logos, fiducials, silkscreen art)
     //   3 = NetTie_BOM         -> include (intentional in BOM)
-    //   4 = NetTie_NoBOM       -> SKIP (process-only net ties)
-    //   5 = Standard (No BOM)  -> SKIP (designer-marked DNP-equivalent;
-    //                                   undocumented ordinal, empirically
-    //                                   stable on AD26)
+    //   4 = NetTie_NoBOM       -> include flagged NoBOM (copper that is
+    //                             on the board but never in the BOM)
+    //   5 = Standard (No BOM)  -> include flagged NoBOM (designer-marked
+    //                             DNP-equivalent; undocumented ordinal,
+    //                             empirically stable on AD26)
     //
     // Altium's public TComponentKind docs only list ordinals 0-4.
-    // Ordinal 5 is undocumented but stable; full skip-list verified by
-    // matching against known no-BOM components (70 hits on the test
-    // project, matched the prior DM_GetParameterByName count of 71
-    // within project-state drift).
+    // Kinds 4 and 5 must stay in the output: NoBOM=true routes them to
+    // bom.skipped on the JS side, which renders the footprint with the
+    // DNP outline and excludes it from the BOM table and stats. Dropping
+    // them from the output entirely makes them invisible on the board
+    // view — that was the DNF regression fixed here.
     // Continue is not bench-verified on AD26 DelphiScript; wrap the
-    // emit block in a positive-test if-then instead. Same effect:
-    // include only kinds 0 (Standard) and 3 (NetTie_BOM).
+    // emit block in a positive-test if-then instead.
     ComponentKindOrd := Ord(Component.GetState_ComponentKind);
-    if (ComponentKindOrd = 0) or (ComponentKindOrd = 3) then
+    if (ComponentKindOrd = 4) or (ComponentKindOrd = 5) then
+      NoBOM := True;
+    if (ComponentKindOrd = 0) or (ComponentKindOrd = 3) or
+      (ComponentKindOrd = 4) or (ComponentKindOrd = 5) then
     begin
+      EmitComponent := ComponentIsFittedInCurrentVariant
+        (Component.SourceUniqueId, Component.SourceDesignator,
+        ProjectVariant);
+
+      // Variant "Not Fitted" parts are DNF, not absent: emit them flagged
+      // NoBOM so the footprint still renders as DNP instead of vanishing.
+      // Instances belonging to a different variant stay excluded.
+      if not EmitComponent then
+        if ComponentIsDNFInCurrentVariant(Component.SourceDesignator,
+          ProjectVariant) then
+        begin
+          NoBOM := True;
+          EmitComponent := True;
+        end;
+
       // Print Pick&Place data of SMD components to file
-      if ComponentIsFittedInCurrentVariant(Component.SourceUniqueId,
-        Component.SourceDesignator, ProjectVariant) then
+      if EmitComponent then
         if (LayerFilterIndex = 0) or
           ((LayerFilterCb = 1) and (Component.Layer = eTopLayer)) or
           ((LayerFilterCb = 2) and (Component.Layer = eBottomLayer)) then
