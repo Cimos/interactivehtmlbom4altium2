@@ -11,6 +11,9 @@ var
   CurrWorkSpace: IWorkSpace; // An Interface handle to the current workspace
   CurrProject: IProject; // An Interface handle to the current Project
   ProjectVariant: IProjectVariant; // An Interface handle to the current Variant
+  VariantNotFittedUIDs: TStringList;
+  // SourceUniqueIds the current variant records as Not Fitted; built once in
+  // SetupProjectVariant by enumerating DM_Variations (see why at that site).
   FlattenedDoc: IDocument; // An Interface handle to the "flattened" document
   CurrComponent: IComponent; // An Interface handle to the current Component
   TargetFileName: String;
@@ -440,97 +443,57 @@ end;
 { ..................................................................................................................... }
 
 {
-  ComponentIsFittedInCurrentVariant cross-checks the ComponentId and Designator
-  against the current project variant (an @ in the ComponentId indicates that
-  the component is part of a variant). Only components that are part of the
-  current variation (and don't have a DNP directive) are included in the
-  output.
+  ComponentIsNotFittedInVariant tells whether the current variant records this
+  component's SourceUniqueId as Not Fitted.
+
+  We match by UID against the set SetupProjectVariant builds from DM_Variations,
+  NOT via DM_FindComponentVariationByDesignator. That by-designator API is
+  unreliable on AD25/26: on a 32-Not-Fitted bench design it resolved only 2
+  designators and returned nil for the other 30, which silently emitted every
+  Not Fitted resistor as a normal fitted BOM part. Exact UID matching also
+  catches each channel instance of a multi-channel part (which share a
+  designator) - the designator path never could.
+}
+Function ComponentIsNotFittedInVariant(ComponentId: TString): Boolean;
+begin
+  Result := False;
+  if VariantNotFittedUIDs = nil then
+    Exit;
+  Result := VariantNotFittedUIDs.IndexOf(ComponentId) <> -1;
+end;
+
+{
+  ComponentIsFittedInCurrentVariant: a component is fitted unless the active
+  variant records its SourceUniqueId as Not Fitted. With no active variant,
+  preserve the legacy rule that a variant-specific ComponentId (carrying '@')
+  belongs to some other variant and is excluded.
 }
 Function ComponentIsFittedInCurrentVariant(ComponentId, Designator: TString;
   _ProjectVariant: IProjectVariant): Boolean;
-var
-  // Designator: IPart;
-  ComponentVariation: IComponentVariation;
 begin
-  // [!!!] UGLY
-  // Designator := ComponentId.DM_SubParts[0];
   if _ProjectVariant = nil then
   begin
-    if pos('@', ComponentId) <> 0 then
-    begin
-      // Exclude components that are part of a variant but we're not inside a variant
-      Result := False;
-    end
-    else
-    begin
-      // Component is not part of a variant, and we're not inside a variant
-      Result := True;
-    end;
+    Result := (pos('@', ComponentId) = 0);
+    Exit;
   end;
-
-  if _ProjectVariant <> nil then
-  begin
-    ComponentVariation := _ProjectVariant.DM_FindComponentVariationByDesignator
-      (Designator);
-    if ComponentVariation <> nil then
-    begin
-      if ComponentId <> ComponentVariation.DM_UniqueId + '@' + _ProjectVariant.DM_Description
-      then
-      begin
-        // Exclude component that is part of another variant
-        Result := False;
-      end
-      else
-      begin
-        // Include component that is part of the current variant
-        Result := True;
-      end;
-      // [!!!] Never
-      if ComponentVariation.DM_VariationKind = eVariation_NotFitted then
-      begin
-        // In any case, exclude components that are not fitted
-        Result := False;
-      end;
-    end
-    else
-    begin
-      if pos('@', ComponentId) <> 0 then
-      begin
-        // Component has a variant-specific ID, but there is no variation defined for it.
-        // Possibly belongs to a different variant --> exclude it.
-        Result := False;
-      end
-      else
-      begin
-        // Component has no variant-specific ID, and no variation is defined --> include it.
-        Result := True;
-      end;
-    end;
-  end;
+  Result := not ComponentIsNotFittedInVariant(ComponentId);
 end;
 
 {
   ComponentIsDNFInCurrentVariant returns True only when the current project
-  variant explicitly marks the designator Not Fitted. Distinct from
+  variant explicitly marks the component Not Fitted. Distinct from
   ComponentIsFittedInCurrentVariant returning False, which also covers
   instances belonging to a different variant - those must stay excluded
   from the output entirely, while Not Fitted parts are emitted flagged
   NoBOM so they render as DNP instead of disappearing from the board view.
 }
-Function ComponentIsDNFInCurrentVariant(Designator: TString;
+Function ComponentIsDNFInCurrentVariant(ComponentId: TString;
   _ProjectVariant: IProjectVariant): Boolean;
-var
-  ComponentVariation: IComponentVariation;
 begin
   Result := False;
   if _ProjectVariant = nil then
     Exit;
-  ComponentVariation := _ProjectVariant.DM_FindComponentVariationByDesignator
-    (Designator);
-  if ComponentVariation = nil then
-    Exit;
-  if ComponentVariation.DM_VariationKind = eVariation_NotFitted then
-    Result := True;
+  Result := ComponentIsNotFittedInVariant(ComponentId);
 end;
 
 function GetComponentParameters(comp: IPCB_Component): TStringList;
@@ -1889,7 +1852,7 @@ Begin
       // NoBOM so the footprint still renders as DNP instead of vanishing.
       // Instances belonging to a different variant stay excluded.
       if not EmitComponent then
-        if ComponentIsDNFInCurrentVariant(Component.SourceDesignator,
+        if ComponentIsDNFInCurrentVariant(Component.SourceUniqueId,
           ProjectVariant) then
         begin
           NoBOM := True;
@@ -2838,8 +2801,27 @@ procedure SetupProjectVariant(Dummy: Integer);
 Var
   ProjVarIndex: Integer; // Index for iterating through variants
   TempVariant: IProjectVariant; // A temporary Handle for a ProjectVariant
+  VarIndex: Integer;
+  Variation: IComponentVariation;
 Begin
   ProjectVariant := CurrProject.DM_CurrentProjectVariant;
+
+  // Snapshot the Not Fitted component UIDs for the active variant. We enumerate
+  // DM_Variations directly and match by UID at emit time because
+  // DM_FindComponentVariationByDesignator misses most Not Fitted parts on
+  // AD25/26 - see ComponentIsNotFittedInVariant.
+  if VariantNotFittedUIDs = nil then
+    VariantNotFittedUIDs := TStringList.Create
+  else
+    VariantNotFittedUIDs.Clear;
+  if ProjectVariant <> nil then
+    for VarIndex := 0 to ProjectVariant.DM_VariationCount - 1 do
+    begin
+      Variation := ProjectVariant.DM_Variations(VarIndex);
+      if Variation <> nil then
+        if Variation.DM_VariationKind = eVariation_NotFitted then
+          VariantNotFittedUIDs.Add(Variation.DM_UniqueId);
+    end;
   {
     // Determine how many ProjectVariants are defined within this focussed Project
     ProjectVariantCount := CurrProject.DM_ProjectVariantCount;
