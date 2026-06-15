@@ -2810,10 +2810,10 @@ Begin
   // DM_Variations directly and match by UID at emit time because
   // DM_FindComponentVariationByDesignator misses most Not Fitted parts on
   // AD25/26 - see ComponentIsNotFittedInVariant.
-  // Free + recreate rather than .Clear: DelphiScript's parser rejects
-  // TStringList.Clear here ("Undeclared identifier: Clear").
-  if VariantNotFittedUIDs <> nil then
-    VariantNotFittedUIDs.Free;
+  // Recreate unconditionally each run, mirroring the other global TStringLists
+  // (Nets, ColumnsParametersNames, GroupParametersNames). DelphiScript rejects
+  // both .Clear and a .Free that precedes any Create in scope (it flags the
+  // method call on a possibly-unassigned variable), so neither can reset it.
   VariantNotFittedUIDs := TStringList.Create;
   if ProjectVariant <> nil then
     for VarIndex := 0 to ProjectVariant.DM_VariationCount - 1 do
